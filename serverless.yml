@@ -1,0 +1,306 @@
+service: serverless-graphql-dm-sample
+
+frameworkVersion: "3"
+
+plugins:
+  - serverless-plugin-typescript
+  - serverless-appsync-plugin
+  - serverless-iam-roles-per-function
+
+provider:
+  name: aws
+  runtime: nodejs20.x
+  architecture: arm64
+  region: ${opt:region, 'us-west-1'}
+  stage: ${opt:stage, 'dev'}
+  logRetentionInDays: 7
+  environment:
+    USERS_TABLE: !Ref UsersTable
+    CONVERSATIONS_TABLE: !Ref ConversationsTable
+    CONVERSATION_PARTICIPANTS_TABLE: !Ref ConversationParticipantsTable
+    DIRECT_MESSAGES_TABLE: !Ref DirectMessagesTable
+    ATTACHMENTS_TABLE: !Ref AttachmentsTable
+    NOTIFICATIONS_TABLE: !Ref NotificationsTable
+    NOTIFICATION_TOKENS_TABLE: !Ref NotificationTokensTable
+    ATTACHMENT_BUCKET_NAME: !Ref AttachmentBucket
+    GRAPHQL_API_URL: !GetAtt GraphQlApi.GraphQLUrl
+    AWS_NODEJS_CONNECTION_REUSE_ENABLED: "1"
+
+functions:
+  createConversation:
+    handler: src/functions/createConversation.handler
+    iamRoleStatements:
+      - Effect: Allow
+        Action: dynamodb:TransactWriteItems
+        Resource:
+          - !GetAtt ConversationsTable.Arn
+          - !GetAtt ConversationParticipantsTable.Arn
+
+  sendDirectMessage:
+    handler: src/functions/sendDirectMessage.handler
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:GetItem
+          - dynamodb:TransactWriteItems
+        Resource:
+          - !GetAtt UsersTable.Arn
+          - !GetAtt ConversationsTable.Arn
+          - !GetAtt ConversationParticipantsTable.Arn
+          - !GetAtt DirectMessagesTable.Arn
+          - !GetAtt AttachmentsTable.Arn
+
+  notifyDM:
+    handler: src/functions/notifyDM.handler
+    events:
+      - stream:
+          type: dynamodb
+          arn: !GetAtt DirectMessagesTable.StreamArn
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:GetItem
+          - dynamodb:Query
+          - dynamodb:PutItem
+        Resource:
+          - !GetAtt UsersTable.Arn
+          - !GetAtt ConversationsTable.Arn
+          - !GetAtt NotificationsTable.Arn
+          - !GetAtt NotificationTokensTable.Arn
+          - !Sub ${NotificationTokensTable.Arn}/index/*
+      - Effect: Allow
+        Action: appsync:GraphQL
+        Resource: "*"
+
+  createAttachmentUploadUrl:
+    handler: src/functions/createAttachmentUploadUrl.handler
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - s3:PutObject
+        Resource: !Sub ${AttachmentBucket.Arn}/*
+
+  listMyConversations:
+    handler: src/functions/listMyConversations.handler
+    iamRoleStatements:
+      - Effect: Allow
+        Action:
+          - dynamodb:Query
+          - dynamodb:BatchGetItem
+        Resource:
+          - !GetAtt ConversationParticipantsTable.Arn
+          - !Sub ${ConversationParticipantsTable.Arn}/index/*
+          - !GetAtt ConversationsTable.Arn
+
+appSync:
+  name: dm-sample-api
+  schema: src/graphql/schema.graphql
+  authentication:
+    type: AMAZON_COGNITO_USER_POOLS
+    config:
+      awsRegion: ${aws:region}
+      userPoolId: !Ref UserPool
+      defaultAction: ALLOW
+  additionalAuthentications:
+    - type: AWS_IAM
+  dataSources:
+    none:
+      type: NONE
+    conversationsTable:
+      type: AMAZON_DYNAMODB
+      config:
+        tableName: !Ref ConversationsTable
+    conversationParticipantsTable:
+      type: AMAZON_DYNAMODB
+      config:
+        tableName: !Ref ConversationParticipantsTable
+    directMessagesTable:
+      type: AMAZON_DYNAMODB
+      config:
+        tableName: !Ref DirectMessagesTable
+    notificationsTable:
+      type: AMAZON_DYNAMODB
+      config:
+        tableName: !Ref NotificationsTable
+    sendDirectMessageFunction:
+      type: AWS_LAMBDA
+      config:
+        functionName: sendDirectMessage
+    createConversationFunction:
+      type: AWS_LAMBDA
+      config:
+        functionName: createConversation
+    createAttachmentUploadUrlFunction:
+      type: AWS_LAMBDA
+      config:
+        functionName: createAttachmentUploadUrl
+    listMyConversationsFunction:
+      type: AWS_LAMBDA
+      config:
+        functionName: listMyConversations
+  resolvers:
+    Query.getAttachmentUploadUrl:
+      dataSource: createAttachmentUploadUrlFunction
+      kind: UNIT
+    Query.getDirectMessages:
+      functions:
+        - dataSource: directMessagesTable
+          code: src/resolvers/getDirectMessages.js
+    Query.listMyConversations:
+      dataSource: listMyConversationsFunction
+      kind: UNIT
+    Mutation.createConversation:
+      dataSource: createConversationFunction
+      kind: UNIT
+    Mutation.sendDirectMessage:
+      dataSource: sendDirectMessageFunction
+      kind: UNIT
+    Mutation.updateConversationReadStatus:
+      functions:
+        - dataSource: conversationParticipantsTable
+          code: src/resolvers/updateConversationReadStatus.js
+    Mutation.notifyDMed:
+      functions:
+        - dataSource: notificationsTable
+          code: src/resolvers/notifyDMed.js
+    Subscription.onDMed:
+      dataSource: none
+      kind: UNIT
+      request: src/resolvers/subscription.request.vtl
+      response: src/resolvers/subscription.response.vtl
+    Subscription.onNotified:
+      dataSource: none
+      kind: UNIT
+      request: src/resolvers/subscription.request.vtl
+      response: src/resolvers/subscription.response.vtl
+
+resources:
+  Resources:
+    UserPool:
+      Type: AWS::Cognito::UserPool
+      Properties:
+        UserPoolName: ${self:service}-${sls:stage}-users
+        AutoVerifiedAttributes:
+          - email
+
+    UsersTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+
+    ConversationsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: id
+            KeyType: HASH
+
+    ConversationParticipantsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: conversationId
+            AttributeType: S
+          - AttributeName: userId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: conversationId
+            KeyType: HASH
+          - AttributeName: userId
+            KeyType: RANGE
+        GlobalSecondaryIndexes:
+          - IndexName: byUserId
+            KeySchema:
+              - AttributeName: userId
+                KeyType: HASH
+              - AttributeName: conversationId
+                KeyType: RANGE
+            Projection:
+              ProjectionType: ALL
+
+    DirectMessagesTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: conversationId
+            AttributeType: S
+          - AttributeName: messageId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: conversationId
+            KeyType: HASH
+          - AttributeName: messageId
+            KeyType: RANGE
+        StreamSpecification:
+          StreamViewType: NEW_AND_OLD_IMAGES
+
+    AttachmentsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: messageId
+            AttributeType: S
+          - AttributeName: attachmentId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: messageId
+            KeyType: HASH
+          - AttributeName: attachmentId
+            KeyType: RANGE
+
+    NotificationsTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: notifiedUserId
+            AttributeType: S
+          - AttributeName: id
+            AttributeType: S
+        KeySchema:
+          - AttributeName: notifiedUserId
+            KeyType: HASH
+          - AttributeName: id
+            KeyType: RANGE
+
+    NotificationTokensTable:
+      Type: AWS::DynamoDB::Table
+      Properties:
+        BillingMode: PAY_PER_REQUEST
+        AttributeDefinitions:
+          - AttributeName: token
+            AttributeType: S
+          - AttributeName: userId
+            AttributeType: S
+        KeySchema:
+          - AttributeName: token
+            KeyType: HASH
+        GlobalSecondaryIndexes:
+          - IndexName: byUserId
+            KeySchema:
+              - AttributeName: userId
+                KeyType: HASH
+            Projection:
+              ProjectionType: ALL
+
+    AttachmentBucket:
+      Type: AWS::S3::Bucket
+      Properties:
+        PublicAccessBlockConfiguration:
+          BlockPublicAcls: true
+          BlockPublicPolicy: true
+          IgnorePublicAcls: true
+          RestrictPublicBuckets: true

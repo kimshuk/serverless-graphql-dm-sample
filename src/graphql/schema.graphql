@@ -1,0 +1,119 @@
+schema {
+  query: Query
+  mutation: Mutation
+  subscription: Subscription
+}
+
+type Query {
+  getAttachmentUploadUrl(
+    conversationId: ID!
+    messageId: ID!
+    attachmentId: ID!
+    extension: String!
+    contentType: String!
+  ): AWSURL!
+  getDirectMessages(
+    conversationId: ID!
+    limit: Int!
+    nextToken: String
+  ): MessagesPage!
+  listMyConversations(limit: Int!, nextToken: String): ConversationsPage!
+}
+
+type Mutation {
+  createConversation(userIds: [ID!]!): Conversation!
+  sendDirectMessage(
+    conversationId: ID!
+    message: String
+    attachments: [AttachmentInput!]
+  ): Message!
+  updateConversationReadStatus(
+    conversationId: ID!
+    lastReadMessageId: ID!
+  ): Boolean!
+  notifyDMed(
+    id: ID!
+    notifiedUserId: ID!
+    notifiedBy: ID!
+    notifierDisplayId: String!
+    notifierProfileImgUrl: AWSURL
+    conversationId: ID!
+    messageId: ID!
+    message: String
+  ): Notification! @aws_iam
+}
+
+type Subscription {
+  onDMed(conversationId: ID!): Message
+    @aws_subscribe(mutations: ["sendDirectMessage"])
+  onNotified(notifiedUserId: ID!): Notification
+    @aws_subscribe(mutations: ["notifyDMed"])
+}
+
+input AttachmentInput {
+  type: AttachmentType!
+  lowResUrl: AWSURL
+  originalUrl: AWSURL!
+  thumbnailUrl: AWSURL
+}
+
+enum AttachmentType {
+  Image
+  Video
+}
+
+type Conversation {
+  id: ID!
+  participants: [ID!]!
+  lastMessage: String
+  lastModified: AWSDateTime!
+}
+
+type Message {
+  conversationId: ID!
+  messageId: ID!
+  fromId: ID!
+  fromDisplayId: String
+  fromProfileImgUrl: AWSURL
+  message: String
+  attachments: [Attachment!]
+  timestamp: AWSDateTime!
+}
+
+type Attachment {
+  attachmentId: ID!
+  conversationId: ID!
+  messageId: ID!
+  fileType: AttachmentType!
+  fileUrlSet: FileUrlSet!
+  timestamp: AWSDateTime!
+}
+
+type FileUrlSet {
+  lowResUrl: AWSURL
+  originalUrl: AWSURL!
+  thumbnailUrl: AWSURL
+}
+
+type Notification {
+  id: ID!
+  notifiedUserId: ID!
+  notifiedBy: ID!
+  notifierDisplayId: String!
+  notifierProfileImgUrl: AWSURL
+  conversationId: ID!
+  messageId: ID!
+  message: String
+  readStatus: Boolean!
+  createdAt: AWSDateTime!
+}
+
+type MessagesPage {
+  messages: [Message!]!
+  nextToken: String
+}
+
+type ConversationsPage {
+  conversations: [Conversation!]!
+  nextToken: String
+}
