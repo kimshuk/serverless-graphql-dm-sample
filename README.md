@@ -16,35 +16,7 @@
 
 ## 아키텍처
 
-```text
-Client
-  |
-  | GraphQL mutation: sendDirectMessage
-  v
-AWS AppSync
-  |
-  | Lambda resolver
-  v
-sendDirectMessage Lambda
-  |
-  | DynamoDB TransactWriteItems
-  v
-DirectMessagesTable + ConversationsTable + ConversationParticipantsTable + AttachmentsTable
-  |
-  | DynamoDB Stream INSERT
-  v
-notifyDM Lambda
-  |
-  | IAM GraphQL mutation: notifyDMed
-  v
-AWS AppSync
-  |
-  +--> onDMed subscription for realtime message delivery
-  +--> onNotified subscription for in-app notification delivery
-  +--> mockPushProvider.sendMulticast for mobile push shape
-```
-
-Subscription의 장기 WebSocket 연결은 AppSync가 관리합니다. Lambda는 이벤트를 생성하거나 fan-out을 처리하지만, WebSocket 연결을 직접 오래 유지하지 않습니다.
+![Serverless DM Architecture](assets/dm_architecture.svg)
 
 ## 데이터 모델
 
